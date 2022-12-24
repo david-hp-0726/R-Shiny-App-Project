@@ -1,0 +1,574 @@
+---
+title: "Group 3 Final Project Script"
+author: "Authors: Ryan Charter, David Chen, Ria Krishna, Fatim Majumder, Mia Roselinsky"
+date: "Date: 2022-12-04"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{css, echo = FALSE}
+h1, h3{
+  text-align: center;
+}
+```
+
+# Import Libraries 
+```{r, message = FALSE}
+library(tidyr)
+library(dplyr)
+library(stringr)
+library(ggplot2)
+library(plotly)
+library(lubridate)
+library(ggmap)
+
+fulldata <- read.csv("fulldata.csv")
+```
+
+# Data Cleaning
+
+#### Change the dtype of variables
+```{r, warning = FALSE}
+fulldata$srch_destination_latitude <- as.numeric(fulldata$srch_destination_latitude)
+fulldata$srch_destination_longitude <- as.numeric(fulldata$srch_destination_longitude)
+fulldata$hour <- hour(format(fulldata$date_time, format = "%H:%M:%S"))
+fulldata$date_time <- as.Date(fulldata$date_time)
+fulldata$srch_ci <- as.Date(fulldata$srch_ci)
+fulldata$srch_co <- as.Date(fulldata$srch_co)
+fulldata$orig_destination_distance <- as.numeric(fulldata$orig_destination_distance)
+fulldata$prop_starrating_cat <- as.factor(fulldata$prop_starrating)
+```
+
+#### Change binary variables into factors
+```{r}
+fulldata$prop_is_branded[fulldata$prop_is_branded == 1] <- "Yes"
+fulldata$prop_is_branded[fulldata$prop_is_branded == 0] <- "No"
+fulldata$prop_is_branded <- as.factor(fulldata$prop_is_branded)
+fulldata$is_booking[fulldata$is_booking == 1] <- "Booked"
+fulldata$is_booking[fulldata$is_booking == 0] <- "Did not book"
+fulldata$is_booking <- as.factor(fulldata$is_booking) 
+```
+
+#### Relabel the categories of price, popularity, and distance
+```{r}
+# store the initial values
+temp_price <- fulldata$hist_price_band
+temp_pop <- fulldata$popularity_band
+temp_dist <- fulldata$distance_band
+
+# create two dictionaries to convert values
+dict1 <- c(
+  "VL" = "Very Low",
+  "L" = "Low",
+  "M" = "Medium", 
+  "H" = "High", 
+  "VH" = "Very High"
+)
+dict2 <- c(
+  "VC" = "Very Close",
+  "C" = "Close",
+  "M" = "Medium",
+  "F" = "Far",
+  "VF" = "Very Far"
+)
+
+# convert values
+fulldata$hist_price_band <- dict1[temp_price]
+fulldata$popularity_band <- dict1[temp_pop]
+fulldata$distance_band <- dict2[temp_dist]
+
+# define the order of values
+fulldata$hist_price_band <- factor(fulldata$hist_price_band, levels = c("Very Low", "Low", "Medium", "High", "Very High"))
+fulldata$popularity_band <- factor(fulldata$popularity_band, levels = c("Very Low", "Low", "Medium", "High", "Very High"))
+fulldata$distance_band <- factor(fulldata$distance_band, levels = c("Very Far", "Far", "Medium", "Close", "Very Close"))
+```
+
+# Create New Variables
+
+#### Compute the number of days users plan to stay
+```{r}
+fulldata$stay_length <- as.numeric(difftime(fulldata$srch_co, fulldata$srch_ci, units = "days"))
+```
+
+#### Whether the user is traveling to a different country
+```{r}
+fulldata$abroad <- factor(NA, levels = c("Domestic", "International"))
+fulldata$abroad[fulldata$user_location_country == fulldata$hotel_country] <- "Domestic"
+fulldata$abroad[fulldata$user_location_country != fulldata$hotel_country] <- "International"
+```
+
+#### Whether the user is from the US
+```{r}
+fulldata$User_Location <- factor(NA, levels = c(
+  "US", "Not US"
+))
+
+dict_location <- function(x) {
+  if(x == "UNITED STATES OF AMERICA") {
+    return("US")
+  }
+  else {
+    return("Not US")
+  }
+}
+
+fulldata$User_Location <- apply(matrix(fulldata$user_location_country), 1, dict_location)
+```
+
+#### Season
+```{r}
+fulldata$month <- month(as.Date(fulldata$date_time))
+
+# a dictionary to convert values into seasons based on months
+dict_season <- function(month){
+  if (month >= 3 & month < 6) {
+    return("Spring")
+  }
+  if (month >= 6 & month < 9) {
+    return("Summer")
+  }
+  if (month >= 9 & month < 12) {
+    return("Fall")
+  }
+  return("Winter")
+}
+
+fulldata$season <- apply(matrix(fulldata$month), 1, dict_season)
+```
+
+#### Popularity Score (Computed using the average of travel-related facet scores)
+```{r}
+fulldata$pop_score <- fulldata %>% 
+  select(starts_with("popular_")) %>%
+  apply(1, function(x) {as.numeric(sum(x) * -1 - 300)})
+```
+# Final Clean Up
+
+```{r}
+# remove irrelevant columns
+fulldata <- fulldata[, substr(colnames(fulldata), 1, 8) != "popular_"]
+
+# remove irrational & missing data
+fulldata$stay_length[fulldata$stay_length < 0] <- NA
+fulldata$orig_destination_distance[fulldata$orig_destination_distance < 0] <- NA
+fulldata <- fulldata %>% drop_na(stay_length, orig_destination_distance, pop_score)
+```
+
+# Plots 
+### (Note some plots are conditionally displayed based on the variable chosen)
+
+#### How is distance related to the number of children and adults traveling?
+```{r}
+fit_adult <- lm(orig_destination_distance ~ srch_adults_cnt, data = fulldata)
+fit_children <- lm(orig_destination_distance ~ srch_children_cnt, data = fulldata)
+
+plot_adult <- plot_ly(fulldata, x = ~srch_adults_cnt) %>%
+      add_markers(y = ~orig_destination_distance) %>%
+      add_lines(x = ~srch_adults_cnt, y = fitted(fit_adult)) %>%
+      layout(xaxis = list(title = "Number of Adults"), 
+             yaxis = list(title = "User Distance from The Booked Hotel"),
+             showlegend = F)
+plot_children <- plot_ly(fulldata, x = ~srch_children_cnt) %>%
+      add_markers(y = ~orig_destination_distance) %>%
+      add_lines(x = ~srch_children_cnt, y = fitted(fit_children))  %>%
+      layout(xaxis = list(title = "Number of Childen"),
+             showlegend = F)
+subplot(plot_adult, plot_children, nrows = 1, shareY = T, shareX = T) %>%
+      layout(title = "<b> Distance <b>")
+```
+
+#### How is length of stay related to the number of children and adults traveling?
+```{r}
+fit_adult <- lm(stay_length ~ srch_adults_cnt, data = fulldata)
+fit_children <- lm(stay_length ~ srch_children_cnt, data = fulldata)
+
+plot_adult <- plot_ly(fulldata, x = ~srch_adults_cnt) %>%
+  add_markers(y = ~stay_length) %>%
+  add_lines(x = ~srch_adults_cnt, y = fitted(fit_adult)) %>%
+  add_text(x = 10, y = 10, text = "100") %>%
+  layout(xaxis = list(title = "Number of Adults"), 
+         yaxis = list(title = "User Intended Length of Stay"), 
+         showlegend = F)
+plot_children <- plot_ly(fulldata, x = ~srch_children_cnt) %>%
+  add_markers(y = ~stay_length) %>%
+  add_lines(x = ~srch_children_cnt, y = fitted(fit_children))  %>%
+  layout(xaxis = list(title = "Number of Childen"),
+         showlegend = F)
+subplot(plot_adult, plot_children, nrows = 1, shareY = T, shareX = T) %>%
+  layout(title = "<b> Length <b>")
+```
+
+#### How do hotel preferences differ for domestic and international travelers? (Conditionally Displayed)
+```{r, message = FALSE}
+exp_var <- c("is branded hotel", "hotel star rating", "hotel price band", "hotel popularity band")[3] # choose explanatory variable
+
+if (exp_var == "is branded hotel") {
+  table <- fulldata %>%
+    group_by(abroad, prop_is_branded) %>%
+    summarize(count = n()) %>%
+    mutate(prop = count / sum(count))
+  
+  plot_ly(table, x = ~abroad, y = ~prop, color = ~prop_is_branded) %>%
+    add_bars() %>%
+    layout(xaxis = list(title = "Hotel Location"), 
+           yaxis = list(title = "Percentage of Users"),
+           legend = list(title = list(text = "<b> Whether the Hotel Is Branded <b>")),
+           title = list(text = "<b> Is Branded Hotel <b>", x = 0.3))
+} else if (exp_var == "hotel star rating") {
+  table <- fulldata %>%
+    group_by(abroad, prop_starrating_cat) %>%
+    summarize(count = n()) %>%
+    mutate(prop = count / sum(count))
+  
+  plot_ly(table, x = ~abroad, y = ~prop, color = ~prop_starrating_cat) %>%
+    add_bars() %>%
+    layout(xaxis = list(title = "Hotel Location"), 
+           yaxis = list(title = "Percentage of Users"),
+           legend = list(title = list(text = "<b> Hotel Star Rating <b>")),
+           title = list(text = "<b> Hotel Star Rating <b>", x = 0.3))
+} else if (exp_var == "hotel price band") {
+  table <- fulldata %>%
+    group_by(abroad, hist_price_band) %>%
+    summarize(count = n()) %>%
+    mutate(prop = count / sum(count))
+  
+  plot_ly(table, x = ~abroad, y = ~prop, color = ~hist_price_band) %>%
+    add_bars() %>%
+    layout(xaxis = list(title = "Hotel Location"), 
+           yaxis = list(title = "Percentage of Users"),
+           legend = list(title = list(text = "<b> Hotel Price Ragne <b>")),
+           title = list(text = "<b> Hotel Price Band <b>", x = 0.3))
+}else if (exp_var == "hotel popularity band") {
+  table <- fulldata %>%
+    group_by(abroad, popularity_band) %>%
+    summarize(count = n()) %>%
+    mutate(prop = count / sum(count))
+  
+  plot_ly(table, x = ~abroad, y = ~prop, color = ~popularity_band) %>%
+    add_bars() %>%
+    layout(xaxis = list(title = "Hotel Location"), 
+           yaxis = list(title = "Percentage of Users"),
+           legend = list(title = list(text = "<b> Hotel Popularity <b>")),
+           title = list(text = "<b> Hotel Popularity Band <b>", x = 0.3))
+}
+```
+
+#### Popular Destinations for US and Non-US Users
+```{r}
+world <- map_data("world")
+
+ggplot() +
+  geom_polygon(data = world, aes(x = long, y = lat, group = group),
+               fill = "white", color = "black") +
+  geom_point(data = fulldata, aes(x = srch_destination_longitude,
+                                  y = srch_destination_latitude,
+                                  color = User_Location),
+             alpha = 0.5) +
+  scale_color_manual(values = c("red", "blue")) + 
+  ggtitle("Popular Destinations of US and Non-US Users") +
+  theme(axis.text = element_blank(),
+        axis.title = element_blank(),
+        axis.ticks = element_blank()) 
+
+
+non_us <- fulldata %>% filter(User_Location == "US")
+
+ggplot() +
+  geom_polygon(data = world, aes(x = long, y = lat, group = group),
+               fill = "white", color = "black") +
+  geom_point(data = non_us, aes(x = srch_destination_longitude,
+                                  y = srch_destination_latitude,
+                                  color = User_Location),
+             alpha = 0.5, color = "blue") + 
+  ggtitle("Popular Destinations of US and Non-US Users") +
+  theme(axis.text = element_blank(),
+        axis.title = element_blank(),
+        axis.ticks = element_blank()) 
+
+
+us <- fulldata %>%
+  filter(User_Location == "Not US")
+
+ggplot() +
+  geom_polygon(data = world, aes(x = long, y = lat, group = group),
+               fill = "white", color = "black") +
+  geom_point(data = us, aes(x = srch_destination_longitude,
+                                  y = srch_destination_latitude,
+                                  color = User_Location),
+             alpha = 0.5, color = "red") + 
+  ggtitle("Popular Destinations of US and Non-US Users") +
+  theme(axis.text = element_blank(),
+        axis.title = element_blank(),
+        axis.ticks = element_blank()) 
+```
+
+#### How does percent booking change across seasons? 
+```{r, message = FALSE, warning = FALSE}
+season_tab <- fulldata %>%
+      group_by(season, is_booking) %>%
+      summarize(n = n()) %>%
+      mutate(prop = n / sum(n))
+    
+    plot_ly(season_tab, x = ~season, y = ~prop, color = ~factor(is_booking)) %>%
+      add_bars() %>%
+      layout(xaxis = list(title = "Season"),
+             yaxis = list(title = "Percent of Users"),
+             title = "Booking by Season")
+```
+
+#### How does the number of bookings/clicks vary for different times in the day?
+```{r, message = FALSE}
+bookings_tab <- fulldata %>%
+      group_by(hour, is_booking) %>%
+      summarize(count = n()) %>%
+      filter(is_booking == "Booked")
+      
+    plot_ly(bookings_tab, x = ~hour, y = ~count, type = "scatter", mode = "line") %>%
+      layout(xaxis = list(title = "Hour of Day"),
+             yaxis = list(title = "Number of Bookings"), 
+             title = "Booking by Hour of Day")
+```
+
+#### How do clicks and bookings vary for different hotels? (Conditional Display)
+```{r, message = FALSE, warnings = FALSE}
+exp_var <- c("is branded hotel", "hotel star rating", "hotel price band", "hotel popularity band")[4] # choose explanatory variable
+
+clicks <- fulldata %>% filter(is_booking == "Did not book")
+response <- "Clicks"
+
+if (exp_var == "is branded hotel") {
+  explanatory <- "Brand"
+  tab <- clicks %>%
+    group_by(prop_is_branded, is_booking) %>%
+    summarize(count = n())
+  
+  plot_ly(tab, x = ~prop_is_branded, y = ~count, color = ~prop_is_branded) %>%
+    add_bars() %>%
+    layout(xaxis = list(title = "Is Branded Hotel"),
+           yaxis = list(title = paste("Number of ", response)),
+           title = paste(response, "by", explanatory), 
+           showlegend = F)
+} else if (exp_var == "hotel star rating") {
+  explanatory <- "Star Rating"
+  tab <- clicks %>%
+    group_by(prop_starrating_cat, is_booking) %>%
+    summarize(count = n())
+  
+  plot_ly(tab, x = ~prop_starrating_cat, y = ~count, color = ~prop_starrating_cat) %>%
+    add_bars() %>%
+    layout(xaxis = list(title = "Hotel Star Rating"),
+           yaxis = list(title = paste("Number of ", response)),
+           title = paste(response, "by", explanatory),
+           showlegend = F)
+} else if (exp_var == "hotel price band") {
+  explanatory <- "Price Band"
+  tab <- clicks %>%
+    group_by(hist_price_band, is_booking) %>%
+    summarize(count = n())
+  
+  plot_ly(tab, x = ~hist_price_band, y = ~count, color = ~hist_price_band) %>%
+    add_bars() %>%
+    layout(xaxis = list(title = "Hotel Price Range"),
+           yaxis = list(title = paste("Number of ", response)),
+           title = paste(response, "by", explanatory),
+           showlegend = F)
+} else if (exp_var == "hotel popularity band") {
+  explanatory <- "Popularity Band"
+  tab <- clicks %>%
+    group_by(popularity_band, is_booking) %>%
+    summarize(count = n())
+  
+  plot_ly(tab, x = ~popularity_band, y = ~count, color = ~popularity_band) %>%
+    add_bars() %>%
+    layout(xaxis = list(title = "Hotel Popularity Band"),
+           yaxis = list(title = paste("Number of ", response)),
+           title = paste(response, "by", explanatory), 
+           showlegend = F)
+}
+
+bookings <- fulldata %>% filter(is_booking == "Booked")
+response <- "Bookings"
+if (exp_var == "is branded hotel") {
+  explanatory <- "Brand"
+  tab <- bookings %>%
+    group_by(prop_is_branded, is_booking) %>%
+    summarize(count = n())
+  
+  plot_ly(tab, x = ~prop_is_branded, y = ~count, color = ~prop_is_branded) %>%
+    add_bars() %>%
+    layout(xaxis = list(title = "Is Branded Hotel"),
+           yaxis = list(title = paste("Number of ", response)),
+           title = paste(response, "by", explanatory), 
+           showlegend = F)
+} else if (exp_var == "hotel star rating") {
+  explanatory <- "Star Rating"
+  tab <- bookings %>%
+    group_by(prop_starrating_cat, is_booking) %>%
+    summarize(count = n())
+  
+  plot_ly(tab, x = ~prop_starrating_cat, y = ~count, color = ~prop_starrating_cat) %>%
+    add_bars() %>%
+    layout(xaxis = list(title = "Hotel Star Rating"),
+           yaxis = list(title = paste("Number of ", response)),
+           title = paste(response, "by", explanatory),
+           showlegend = F)
+} else if (exp_var == "hotel price band") {
+  explanatory <- "Price Band"
+  tab <- bookings %>%
+    group_by(hist_price_band, is_booking) %>%
+    summarize(count = n())
+  
+  plot_ly(tab, x = ~hist_price_band, y = ~count, color = ~hist_price_band) %>%
+    add_bars() %>%
+    layout(xaxis = list(title = "Hotel Price Range"),
+           yaxis = list(title = paste("Number of ", response)),
+           title = paste(response, "by", explanatory),
+           showlegend = F)
+} else if (exp_var == "hotel popularity band") {
+  explanatory <- "Popularity Band"
+  tab <- bookings %>%
+    group_by(popularity_band, is_booking) %>%
+    summarize(count = n())
+  
+  plot_ly(tab, x = ~popularity_band, y = ~count, color = ~popularity_band) %>%
+    add_bars() %>%
+    layout(xaxis = list(title = "Hotel Popularity Band"),
+           yaxis = list(title = paste("Number of ", response)),
+           title = paste(response, "by", explanatory), 
+           showlegend = F)
+}
+```
+
+#### How does popularity/price/distance affect the likeability of hotels? (Conditional Display)
+```{r, message = FALSE, warnings = FALSE}
+res_var <- c("length of stay", "hotel star rating", "travel-related facets score")[2] # choose response variable
+exp_var <- c("popularity band", "price band", "distance band")[2] # choose explanatory variable
+
+if (res_var == "length of stay") {
+  res_name <- "Length of Stay"
+  if (exp_var == "popularity band") {
+    exp_name <- "Popularity Band"
+    tab <- fulldata %>%
+      group_by(popularity_band) %>%
+      summarize(avg = mean(stay_length))
+    
+    plot_ly(tab, x = ~popularity_band, y = ~avg, color = ~popularity_band) %>%
+      add_bars() %>%
+      layout(xaxis = list(title = exp_name),
+             yaxis = list(title = res_name), 
+             title = paste(res_name, "by", exp_name),
+             showlegend = F)
+  }
+  else if (exp_var == "price band") {
+    exp_name <- "Price Range"
+    tab <- fulldata %>%
+      group_by(hist_price_band) %>%
+      summarize(avg = mean(stay_length))
+    
+    plot_ly(tab, x = ~hist_price_band, y = ~avg, color = ~hist_price_band) %>%
+      add_bars() %>%
+      layout(xaxis = list(title = exp_name),
+             yaxis = list(title = res_name), 
+             title = paste(res_name, "by", exp_name),
+             showlegend = F)
+  }
+  else if (exp_var == "distance band") {
+    exp_name <- "Distance Band"
+    tab <- fulldata %>%
+      group_by(distance_band) %>%
+      summarize(avg = mean(stay_length))
+    
+    plot_ly(tab, x = ~distance_band, y = ~avg, color = ~distance_band) %>%
+      add_bars() %>%
+      layout(xaxis = list(title = exp_name),
+             yaxis = list(title = res_name), 
+             title = paste(res_name, "by", exp_name),
+             showlegend = F)
+  }
+} else if (res_var == "hotel star rating") {
+  res_name <- "Hotel Star Rating"
+  if (exp_var == "popularity band") {
+    exp_name <- "Popularity Band"
+    tab <- fulldata %>%
+      group_by(popularity_band) %>%
+      summarize(avg = mean(prop_starrating))
+    
+    plot_ly(tab, x = ~popularity_band, y = ~avg, color = ~popularity_band) %>%
+      add_bars() %>%
+      layout(xaxis = list(title = exp_name),
+             yaxis = list(title = res_name), 
+             title = paste(res_name, "by", exp_name),
+             showlegend = F)
+  }
+  else if (exp_var == "price band") {
+    exp_name <- "Price Range"
+    tab <- fulldata %>%
+      group_by(hist_price_band) %>%
+      summarize(avg = mean(prop_starrating))
+    
+    plot_ly(tab, x = ~hist_price_band, y = ~avg, color = ~hist_price_band) %>%
+      add_bars() %>%
+      layout(xaxis = list(title = exp_name),
+             yaxis = list(title = res_name), 
+             title = paste(res_name, "by", exp_name),
+             showlegend = F)
+  }
+  else if (exp_var == "distance band") {
+    exp_name <- "Distance Band"
+    tab <- fulldata %>%
+      group_by(distance_band) %>%
+      summarize(avg = mean(prop_starrating))
+    
+    plot_ly(tab, x = ~distance_band, y = ~avg, color = ~distance_band) %>%
+      add_bars() %>%
+      layout(xaxis = list(title = exp_name),
+             yaxis = list(title = res_name), 
+             title = paste(res_name, "by", exp_name),
+             showlegend = F)
+  }
+} else if (res_var == "travel-related facets score") {
+  res_name <- "Travel-Related Facets Score"
+  if (exp_var == "popularity band") {
+    exp_name <- "Popularity Band"
+    tab <- fulldata %>%
+      group_by(popularity_band) %>%
+      summarize(avg = mean(pop_score))
+    
+    plot_ly(tab, x = ~popularity_band, y = ~avg, color = ~popularity_band) %>%
+      add_bars() %>%
+      layout(xaxis = list(title = exp_name),
+             yaxis = list(title = res_name), 
+             title = paste(res_name, "by", exp_name),
+             showlegend = F)
+  }
+  else if (exp_var == "price band") {
+    exp_name <- "Price Range"
+    tab <- fulldata %>%
+      group_by(hist_price_band) %>%
+      summarize(avg = mean(pop_score))
+    
+    plot_ly(tab, x = ~hist_price_band, y = ~avg, color = ~hist_price_band) %>%
+      add_bars() %>%
+      layout(xaxis = list(title = exp_name),
+             yaxis = list(title = res_name), 
+             title = paste(res_name, "by", exp_name),
+             showlegend = F)
+  }
+  else if (exp_var == "distance band") {
+    exp_name <- "Distance Band"
+    tab <- fulldata %>%
+      group_by(distance_band) %>%
+      summarize(avg = mean(pop_score))
+    
+    plot_ly(tab, x = ~distance_band, y = ~avg, color = ~distance_band) %>%
+      add_bars() %>%
+      layout(xaxis = list(title = exp_name),
+             yaxis = list(title = res_name), 
+             title = paste(res_name, "by", exp_name),
+             showlegend = F)
+  }
+}
+```
